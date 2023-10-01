@@ -1,7 +1,6 @@
 import java.time.LocalDateTime;
-import java.util.Date;
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * @ParkingLot
@@ -30,12 +29,12 @@ problems:
  **/
 /*
 
-    objects: car, parkingLot, ParkingLevel, ParkingGarage ticket
+    objects: car, parkingLot, ParkingLevel, ParkingGarage, ticket,
 
     Services:
     1. payment service
     2. allocation service --done
-    3. exit service
+    3. exit service --done
     4. numbering service
     5. search service
         --  by color
@@ -56,79 +55,109 @@ interface IVehicleSearchService{
 
 interface IParkingSpotSearchService{
     List<ParkingSpot> searchByLevel(int level);
-    List<ParkingSpot> searchByDuration(int level);
+    List<ParkingSpot> searchByDuration(int level, int duration);
+
+    ParkingSpot searchEmptySpot(VehicleType vehicleType,List<VehicleType> upgrades);
 }
 
 interface ITicketService{
     Ticket issueTicket(Vehicle vehicle);
     int exit(Vehicle vehicle);
 }
-class TicketService implements ITicketService{
-    VehicleParkAllocator vehicleParkAllocator;
-    VehicleAllocatorSerive allocatorSerive;
-    List<Ticket> issuedTickets;
 
-    public List<Ticket> getIssuedTickets() {
-        return issuedTickets;
+interface IAllocationService{
+    Ticket allocate(Vehicle vehicle);
+    int deallocate(Vehicle vehicle);
+}
+abstract class AllocationService implements IAllocationService{
+    IParkingSpotSearchService spotSearchService;
+    List<Ticket> allocatedTickets;
+    CostService costService;
+    VehicleType vehicleType;
+    List<VehicleType> upgrades;
+    AllocationService(VehicleType vehicleType, List<VehicleType> upgrades){
+        this.vehicleType = vehicleType;
+        this.upgrades = upgrades;
     }
-
-    @Override
-    public Ticket issueTicket(Vehicle vehicle){
-        vehicleParkAllocator = allocatorSerive.getAllocator(vehicle);
-        Ticket ticket = vehicleParkAllocator.allocateParkingSpot(vehicle);
-        issuedTickets.add(ticket);
-        return ticket;
+    public Ticket allocate(Vehicle vehicle){
+        ParkingSpot spot = spotSearchService.searchEmptySpot(vehicleType,upgrades);
+        if(spot!=null && spot.isFree) {
+            Ticket ticket = new Ticket(vehicle, spot, LocalDateTime.now());
+            vehicle.setTicket(ticket);
+            allocatedTickets.add(ticket);
+        }
+        return null;
     }
-    int chargeCalculator(Ticket ticket){
-        Vehicle vehicle = ticket.vehicle;
-        VehicleParkAllocator vehicleParkAllocator;
-        int duration = 100;
-        int charge = ticket.parkingSpot.getCharge();
-        issuedTickets.remove(ticket);
-        vehicleParkAllocator = allocatorSerive.getAllocator(vehicle);
-        vehicleParkAllocator.deallocate(ticket.parkingSpot);
-        return charge*duration;
-    }
-
-    @Override
-    public int exit(Vehicle vehicle) {
-        ParkingSpot parkingSpot = vehicle.ticket.parkingSpot;
-        VehicleParkAllocator vehicleParkAllocator;
-        vehicleParkAllocator = allocatorSerive.getAllocator(vehicle);
-        vehicleParkAllocator.deallocate(parkingSpot);
-        int charge = chargeCalculator(vehicle.ticket);
+    public int deallocate(Vehicle vehicle){
+        Ticket ticket = vehicle.ticket;
+        ParkingSpot spot = ticket.parkingSpot;
+        spot.parkingLevel.addFreeSpot(vehicleType, spot);
+        vehicle.ticket = null;
+        allocatedTickets.remove(ticket);
+        int charge = 0;
+        charge = costService.getCharge(ticket.inTime, ticket.outTime);
         return charge;
     }
 }
-class VehicleAllocatorSerive{
-    VehicleParkAllocator motorcycleGAllocater;
-    VehicleParkAllocator motorcycleSAllocater;
-    VehicleParkAllocator cycleGAllocater;
-    VehicleParkAllocator cycleSAllocater;
-    VehicleParkAllocator carGAllocater;
-    VehicleParkAllocator carSAllocater;
+class CarAllocationService extends AllocationService{
+    CarAllocationService(List<VehicleType> upgrades){
+        super(VehicleType.CAR, upgrades);
+    }
+}
+class ParkingSpotService implements IParkingSpotSearchService{
+    List<ParkingLevel> levels;
+    @Override
+    public List<ParkingSpot> searchByLevel(int level) {
+        if(levels.size()>level)
+            return levels.get(level).getFreeParkingSpots();
 
-    public VehicleParkAllocator getAllocator(Vehicle vehicle) {
-        if(vehicle instanceof Car && vehicle.driver.driverType instanceof General)
-            return carGAllocater;
-        if(vehicle instanceof Car && vehicle.driver.driverType instanceof SpecialAbled)
-            return carSAllocater;
-        if(vehicle instanceof Motorcycle && vehicle.driver.driverType instanceof General)
-            return motorcycleGAllocater;
-        if(vehicle instanceof Motorcycle && vehicle.driver.driverType instanceof SpecialAbled)
-            return motorcycleSAllocater;
-        if(vehicle instanceof Cycle && vehicle.driver.driverType instanceof General)
-            return cycleGAllocater;
-        if(vehicle instanceof Cycle && vehicle.driver.driverType instanceof SpecialAbled)
-            return cycleSAllocater;
         return null;
     }
+
+    @Override
+    public List<ParkingSpot> searchByDuration(int level, int duration) {
+        if(levels.size()>level) {
+            List<ParkingSpot> list = levels.get(level).getBookedParkingSpots();
+            return list.stream().filter(parkingSpot -> LocalDateTime.now().minus(parkingSpot.vehicle.ticket.inTime) >duration).collect(Collectors.toList());
+        }
+        return null;
+    }
+
+    @Override
+    public ParkingSpot searchEmptySpot(VehicleType vehicleType,List<VehicleType> upgrades) {
+
+        for(ParkingLevel level: levels){
+            if(level.hasNextParkingSpot(vehicleType)){
+                return level.nextFreeParkingSpot(vehicleType);
+            }
+        }
+        for(VehicleType upgrade: upgrades){
+            for(ParkingLevel level: levels){
+                if(level.hasNextParkingSpot(upgrade)){
+                    return level.nextFreeParkingSpot(upgrade);
+                }
+            }
+        }
+        return null;
+    }
+}
+//
+enum VehicleType{
+    CAR,
+    MOTORCYCLE,
+    CYCLE,
 }
 abstract class Vehicle {
     String registrationNumber;
     Color color;
     PersonInfo driver;
+
+    public void setTicket(Ticket ticket) {
+        this.ticket = ticket;
+    }
+
     Ticket ticket;
+    VehicleType vehicleType;
 }
 class Car extends Vehicle{
 
@@ -145,218 +174,69 @@ abstract class ParkingSpot{
     Loc loc;
     int duration;
     int spots;
-    List<Integer> costSlab;
-    int getCharge(){
-        int duration=100;
-        //slab logic based on duration
-        int slabIdx=0;
-        return costSlab.get(slabIdx)*duration;
-    }
-}
-abstract class CarParkingSpot extends ParkingSpot{
-   // int charge;
-    int maxTime;
-    int maxSpots;
 
-}
-class CarGeneralSpot extends CarParkingSpot{
-
-}
-
-class CarSpeciallyAbledSpot extends CarParkingSpot{
-
-}
-abstract class MotorcycleParkingSpot extends ParkingSpot implements DriverType{
-    int charge;
-    int maxTime;
-}
-
-class MotorcycleGeneralSpot extends MotorcycleParkingSpot{
-
-}
-
-class MotorcycleSpeciallyAbledSpot extends MotorcycleParkingSpot{
-
-}
-class CycleParkingSpot extends ParkingSpot implements DriverType{
-    int charge;
-    int maxTime;
-}
-class CycleGeneralSpot extends CycleParkingSpot{
-
-}
-
-class CycleSpeciallyAbledSpot extends CycleParkingSpot{
-
-}
-abstract class VehicleParkAllocator {
-    List<VehicleParkAllocator> upgrades;
-    List<ParkingSpot> parkingSpots;
-    Ticket allocateParkingSpot(Vehicle vehicle){
-        if(parkingSpots.size()!=0){
-            Ticket ticket = new Ticket();
-            ticket.vehicle = vehicle;
-            ticket.parkingSpot = parkingSpots.remove(0);
-            ticket.inTime = LocalDateTime.now();
-            vehicle.ticket = ticket;
-            return ticket;
-        }
-        for(VehicleParkAllocator diffSpotAllocator: upgrades){
-            Ticket ticket = diffSpotAllocator.allocateParkingSpot(vehicle);
-            if(ticket!=null) {
-                vehicle.ticket = ticket;
-                return ticket;
-            }
-        }
-        return null;
+    public void assign(Vehicle vehicle) {
+        this.vehicle = vehicle;
     }
 
-    abstract void addParkingSlot();
-    abstract void setUpgrades();
+    Vehicle vehicle;
 
-    public abstract void deallocate(ParkingSpot parkingSpot);
+    public void setFree(boolean free) {
+        isFree = free;
+    }
+
+    boolean isFree;
+    VehicleType vehicleType;
+    ParkingSpot(VehicleType vehicleType){
+        this.vehicleType = vehicleType;
+    }
+
 }
-abstract class CarParkSlotAllocater extends VehicleParkAllocator {
-    @Override
-    void setUpgrades() {
-        upgrades.add(MotorcycleParkGeneralSlotAllocator.getInstance());
-        upgrades.add(MotorcycleParkSpecialSlotAllocator.getInstance());
-        upgrades.add(CycleParkGeneralSlotAllocator.getInstance());
-        upgrades.add(CycleParkSpecialSlotAllocator.getInstance());
+class CarParkingSpot extends ParkingSpot{
+    CarParkingSpot() {
+        super(VehicleType.CAR);
     }
 }
 
-class CarParkGeneralSlotAllocator extends CarParkSlotAllocater{
-    static CarParkGeneralSlotAllocator carParkGeneralSlotAllocator;
-    private CarParkGeneralSlotAllocator() {
-
-    }
-    public static CarParkGeneralSlotAllocator getInstance(){
-        if(carParkGeneralSlotAllocator==null){
-            carParkGeneralSlotAllocator =  new CarParkGeneralSlotAllocator();
-        }
-        return carParkGeneralSlotAllocator;
-    }
-
-    void addParkingSlot(){
-        ParkingSpot parkingSpot = new CarGeneralSpot();
-        parkingSpots.add(parkingSpot);
+class MotorCycleParkingSpot extends ParkingSpot {
+    MotorCycleParkingSpot() {
+        super(VehicleType.MOTORCYCLE);
     }
 }
 
-class CarParkSpecialSlotAllocator extends CarParkSlotAllocater{
 
-    static CarParkSpecialSlotAllocator carParkSpecialSlotAllocator;
-    private CarParkSpecialSlotAllocator() {
-
-    }
-    public static CarParkSpecialSlotAllocator getInstance(){
-        if(carParkSpecialSlotAllocator==null){
-            carParkSpecialSlotAllocator =  new CarParkSpecialSlotAllocator();
-        }
-        return carParkSpecialSlotAllocator;
-    }
-
-    void addParkingSlot(){
-        ParkingSpot parkingSpot = new CarSpeciallyAbledSpot();
-        parkingSpots.add(parkingSpot);
+class CycleParkingSpot extends ParkingSpot{
+    CycleParkingSpot() {
+        super(VehicleType.CYCLE);
     }
 }
-
-abstract class MotorcycleParkSlotAllocater extends VehicleParkAllocator{
-    void addParkingSlot(){
-        ParkingSpot parkingSpot = new CarGeneralSpot();
-        parkingSpots.add(parkingSpot);
+enum DurationSlab{
+    LESS_30,
+    LESS_HOUR,
+    LESS_2_HOUR,
+    MORE_THAN_2_HOUR,
+}
+class CostService {
+    HashMap<DurationSlab,Integer> slab;
+    void setCarCost(DurationSlab durationSlab, int cost){
+        slab.put(durationSlab, cost);
     }
-    void setUpgrades() {
-        upgrades.add(CycleParkGeneralSlotAllocator.getInstance());
-        upgrades.add(CycleParkSpecialSlotAllocator.getInstance());
+
+    public int getCharge(LocalDateTime inTime, LocalDateTime outTime) {
+        int duration = outTime.getHour()- inTime.getHour();
+        if(duration<30)
+            return slab.get(DurationSlab.LESS_30);
+
+        if(duration<60)
+            return slab.get(DurationSlab.LESS_HOUR);
+
+        if(duration<120)
+            return slab.get(DurationSlab.LESS_2_HOUR);
+        return slab.get(DurationSlab.MORE_THAN_2_HOUR);
     }
 }
-
-class MotorcycleParkGeneralSlotAllocator extends CarParkSlotAllocater{
-    static MotorcycleParkGeneralSlotAllocator motorcycleParkGeneralSlotAllocator;
-    private MotorcycleParkGeneralSlotAllocator() {
-
-    }
-    public static MotorcycleParkGeneralSlotAllocator getInstance(){
-        if(motorcycleParkGeneralSlotAllocator ==null){
-            motorcycleParkGeneralSlotAllocator =  new MotorcycleParkGeneralSlotAllocator();
-        }
-        return motorcycleParkGeneralSlotAllocator;
-    }
-    void addParkingSlot(){
-        ParkingSpot parkingSpot = new MotorcycleGeneralSpot();
-        parkingSpots.add(parkingSpot);
-    }
-}
-
-class MotorcycleParkSpecialSlotAllocator extends CarParkSlotAllocater {
-    static MotorcycleParkSpecialSlotAllocator motorcycleParkSpecialSlotAllocator;
-    private MotorcycleParkSpecialSlotAllocator() {
-
-    }
-    public static MotorcycleParkSpecialSlotAllocator getInstance(){
-        if(motorcycleParkSpecialSlotAllocator ==null){
-            motorcycleParkSpecialSlotAllocator =  new MotorcycleParkSpecialSlotAllocator();
-        }
-        return motorcycleParkSpecialSlotAllocator;
-    }
-    void addParkingSlot(){
-        ParkingSpot parkingSpot = new MotorcycleSpeciallyAbledSpot();
-        parkingSpots.add(parkingSpot);
-    }
-}
-abstract class CycleSlotAllocater extends VehicleParkAllocator{
-
-}
-
-class CycleParkGeneralSlotAllocator extends CarParkSlotAllocater{
-    static CycleParkGeneralSlotAllocator cycleParkGeneralSlotAllocator;
-    private CycleParkGeneralSlotAllocator() {
-
-    }
-    public static CycleParkGeneralSlotAllocator getInstance(){
-        if(cycleParkGeneralSlotAllocator ==null){
-            cycleParkGeneralSlotAllocator =  new CycleParkGeneralSlotAllocator();
-        }
-        return cycleParkGeneralSlotAllocator;
-    }
-    void addParkingSlot(){
-        ParkingSpot parkingSpot = new CycleGeneralSpot();
-        parkingSpots.add(parkingSpot);
-    }
-    @Override
-    void setUpgrades() {
-        this.upgrades = null;
-    }
-}
-
-class CycleParkSpecialSlotAllocator extends CarParkSlotAllocater {
-    static CycleParkSpecialSlotAllocator cycleParkSpecialSlotAllocator;
-    private CycleParkSpecialSlotAllocator() {
-
-    }
-    public static CycleParkSpecialSlotAllocator getInstance(){
-        if(cycleParkSpecialSlotAllocator==null){
-            cycleParkSpecialSlotAllocator =  new CycleParkSpecialSlotAllocator();
-        }
-        return cycleParkSpecialSlotAllocator;
-    }
-
-    void addParkingSlot(){
-        ParkingSpot parkingSpot = new CycleSpeciallyAbledSpot();
-        parkingSpots.add(parkingSpot);
-    }
-}
-interface DriverType{
-
-}
-class General implements DriverType{
-
-}
-class SpecialAbled implements DriverType{
-
+class CarCostService extends CostService {
+    //car make more deatiled implementation for chage calculation for each vehicle type if extended.
 }
 class Ticket{
     Vehicle vehicle;
@@ -364,38 +244,88 @@ class Ticket{
     LocalDateTime inTime;
     LocalDateTime outTime;
 
-
+    public Ticket(Vehicle vehicle, ParkingSpot parkingSpot, LocalDateTime inTime) {
+        this.vehicle = vehicle;
+        this.parkingSpot = parkingSpot;
+        this.inTime = inTime;
+        parkingSpot.assign(vehicle);
+    }
 }
 class Loc{
     int x;
     int y;
 }
 
-class Entrance extends Loc{
-
+class Entrance {
+    Loc loc;
 }
 class ParkingLevel{
     int level;
-    List<ParkingSpot> availParkingSpots;
-    //List<ParkingSpot> bookedParkingSpots;
-    List<Loc> entrances;
+    HashMap<VehicleType, ArrayDeque<ParkingSpot>> availSpots;
+    HashMap<VehicleType, ArrayDeque<ParkingSpot>> bookedSpots;
+    int maxSpots;
+    int spots;
+    List<Entrance> entrances;
+
+    boolean hasNextParkingSpot(VehicleType type){
+        return !availSpots.get(type).isEmpty();
+    }
+    List<ParkingSpot> getFreeParkingSpots(){
+        List<ParkingSpot> list = new ArrayList<>();
+        for(ArrayDeque<ParkingSpot> ar: availSpots.values())
+            list.addAll(ar);
+        return list;
+    }
+
+    List<ParkingSpot> getBookedParkingSpots(){
+        List<ParkingSpot> list = new ArrayList<>();
+        for(ArrayDeque<ParkingSpot> ar: bookedSpots.values())
+            list.addAll(ar);
+        return list;
+    }
+
+    ParkingSpot nextFreeParkingSpot(VehicleType vehicleType){
+        if(!hasNextParkingSpot(vehicleType)) return null;
+        ParkingSpot spot = availSpots.get(vehicleType).getFirst();
+        return spot;
+    }
+    ParkingSpot bookSpot(ParkingSpot spot, VehicleType type){
+        if(availSpots.get(type).remove(spot)) {
+            bookedSpots.get(type).add(spot);
+            return spot;
+        }
+        //failed to book
+        return null;
+    }
+    void addFreeSpot(VehicleType type, ParkingSpot spot){
+        availSpots.get(type).add(spot);
+        spot.setFree(true);
+    }
+    void addParkingSpot(VehicleType type){
+        if(type==VehicleType.CAR)
+            availSpots.get(type).add(new CarParkingSpot());
+        if(type==VehicleType.MOTORCYCLE)
+            availSpots.get(type).add(new MotorCycleParkingSpot());
+        if(type==VehicleType.CYCLE)
+            availSpots.get(type).add(new CycleParkingSpot());
+    }
 }
-
-
-enum DType{
-    GENERAL,
-    SPECIALLYABLED,
+class ParkingLot{
+    List<ParkingLevel> parkingLevels;
+    HashMap<VehicleType, Integer> maxSpotsVehicleType;
+    HashMap<ParkingLevel,List<Entrance>> entrances;
+    List<Ticket> tickets;
 }
 
 enum Color{
-   BLUE,
-   BLACK,
-   WHITE,
-   RED,
-   GREY,
-     YELLOW,
-     GREEN,
- }
+    BLUE,
+    BLACK,
+    WHITE,
+    RED,
+    GREY,
+    YELLOW,
+    GREEN,
+}
 class PersonInfo{
     private String uuid;
     Name name;
@@ -404,7 +334,6 @@ class PersonInfo{
     private Address temproaryAddress;
     private List<Card> listOfCards;
     private List<IContactInfo> contactInformation;
-    DriverType driverType;
 }
 class Name{
     String firstName;
@@ -412,7 +341,7 @@ class Name{
     String lastName;
 }
 interface  IContactInfo{
-   public String getContactInfo();
+    public String getContactInfo();
 }
 class EmailAddress implements IContactInfo{
     String userName;
@@ -460,8 +389,91 @@ enum State{
 
 }
 
+
 public class Main {
     public static void main(String[] args) {
         System.out.println("Hello world!");
     }
 }
+
+/*class VehicleAllocatorSerive{
+    //    VehicleParkAllocator cycleAl;
+//    VehicleParkAllocator motorcycleAl;
+//    VehicleParkAllocator carAl;
+////intialize logic for all vehicleAllocators
+//    public VehicleParkAllocator getAllocator(Vehicle vehicle) {
+//        if(vehicle.vehicleType== VehicleType.CAR)
+//                return carAl;
+//        if(vehicle.vehicleType== VehicleType.MOTORCYCLE)
+//            return motorcycleAl;
+//        if(vehicle.vehicleType== VehicleType.CYCLE)
+//            return cycleAl;
+//    }
+//}
+abstract class VehicleParkAllocator {
+    List<VehicleType> upgrades;
+    List<ParkingLevel> parkingLevels;
+
+    abstract void setUpgrades();
+
+    ParkingSpot allocateParkingSpot(VehicleType vehicletype){
+        ParkingSpot spot=null;
+        for(ParkingLevel level: parkingLevels){
+            if(level.hasNextParkingSpot(vehicletype)) {
+                spot = level.nextFreeParkingSpot(vehicletype);
+                level.bookSpot(spot, vehicletype);
+                return spot;
+            }
+        }
+        return null;
+    }
+}
+class CarParkSlotAllocater extends VehicleParkAllocator {
+    static CarParkSlotAllocater carParkSlotAllocater;
+    public static VehicleParkAllocator getInstance() {
+        if(carParkSlotAllocater!=null) return carParkSlotAllocater;
+        carParkSlotAllocater = new CarParkSlotAllocater();
+        return carParkSlotAllocater;
+    }
+
+    @Override
+    void setUpgrades() {
+        upgrades.add(VehicleType.MOTORCYCLE);
+        upgrades.add(VehicleType.CYCLE);
+    }
+
+}
+
+class LargeVehicleParkSlotAllocator extends VehicleParkAllocator{
+    static LargeVehicleParkSlotAllocator largeVehicleParkSlotAllocator;
+    public static VehicleParkAllocator getInstance() {
+        if(largeVehicleParkSlotAllocator !=null) return largeVehicleParkSlotAllocator;
+        largeVehicleParkSlotAllocator = new LargeVehicleParkSlotAllocator();
+        return largeVehicleParkSlotAllocator;
+    }
+    private LargeVehicleParkSlotAllocator(){
+
+    }
+    @Override
+    void setUpgrades() {
+        upgrades.add(VehicleType.CYCLE);
+    }
+}
+
+class CycleParkAllocator extends VehicleParkAllocator{
+    static CycleParkAllocator cycleParkAllocator;
+    public static VehicleParkAllocator getInstance() {
+        if(cycleParkAllocator!=null) return cycleParkAllocator;
+        cycleParkAllocator = new CycleParkAllocator();
+        return cycleParkAllocator;
+    }
+    private CycleParkAllocator(){
+
+    }
+    @Override
+    void setUpgrades() {
+        upgrades.add(VehicleType.MOTORCYCLE);
+    }
+
+}
+*/
