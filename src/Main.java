@@ -53,6 +53,51 @@ interface IVehicleSearchService{
     List<Vehicle> searchByDuration(int duration);
 }
 
+
+class VehicleSearchService implements IVehicleSearchService{
+    //since have multiple allocation services for different vehicle types
+    List<IAllocationService> allocationServices;
+    @Override
+    public List<Vehicle> searchByColor(String color) {
+        List<Vehicle> list = new ArrayList<>();
+        for(IAllocationService service: allocationServices){
+            List<Ticket> issuedTickets = service.getAllocatedTickets();
+            list.addAll(issuedTickets.stream().filter(ticket -> ticket.vehicle.color.equals(color)).map(Ticket::getVehicle).collect(Collectors.toList()));
+        }
+        return list;
+    }
+
+    @Override
+    public List<Vehicle> searchByRegistrationNumber(String number) {
+        List<Vehicle> list = new ArrayList<>();
+        for(IAllocationService service: allocationServices){
+            List<Ticket> issuedTickets = service.getAllocatedTickets();
+            list.addAll(issuedTickets.stream().filter(ticket -> ticket.vehicle.registrationNumber.equals(number)).map(Ticket::getVehicle).collect(Collectors.toList()));
+        }
+        return list;
+    }
+
+    @Override
+    public List<Vehicle> searchByCarType(String carType) {
+        List<Vehicle> list = new ArrayList<>();
+        for(IAllocationService service: allocationServices){
+            if(!service.getVehicleType().equals(carType)) continue;
+            List<Ticket> issuedTickets = service.getAllocatedTickets();
+            list.addAll(issuedTickets.stream().map(Ticket::getVehicle).collect(Collectors.toList()));
+        }
+        return list;
+    }
+
+    @Override
+    public List<Vehicle> searchByDuration(int duration) {
+        List<Vehicle> list = new ArrayList<>();
+        for(IAllocationService service: allocationServices){
+            List<Ticket> issuedTickets = service.getAllocatedTickets();
+            list.addAll(issuedTickets.stream().filter(ticket -> (LocalDateTime.now().getHour() - ticket.inTime.getHour())>duration).map(Ticket::getVehicle).collect(Collectors.toList()));
+        }
+        return list;
+    }
+}
 interface IParkingSpotSearchService{
     List<ParkingSpot> searchByLevel(int level);
     List<ParkingSpot> searchByDuration(int level, int duration);
@@ -60,25 +105,33 @@ interface IParkingSpotSearchService{
     ParkingSpot searchEmptySpot(VehicleType vehicleType,List<VehicleType> upgrades);
 }
 
-interface ITicketService{
-    Ticket issueTicket(Vehicle vehicle);
-    int exit(Vehicle vehicle);
-}
-
 interface IAllocationService{
     Ticket allocate(Vehicle vehicle);
     int deallocate(Vehicle vehicle);
+    List<Ticket> getAllocatedTickets();
+    VehicleType getVehicleType();
+
 }
 abstract class AllocationService implements IAllocationService{
     IParkingSpotSearchService spotSearchService;
+
     List<Ticket> allocatedTickets;
     CostService costService;
+
+    public VehicleType getVehicleType() {
+        return vehicleType;
+    }
+
     VehicleType vehicleType;
     List<VehicleType> upgrades;
     AllocationService(VehicleType vehicleType, List<VehicleType> upgrades){
         this.vehicleType = vehicleType;
         this.upgrades = upgrades;
     }
+    public List<Ticket> getAllocatedTickets() {
+        return allocatedTickets;
+    }
+
     public Ticket allocate(Vehicle vehicle){
         ParkingSpot spot = spotSearchService.searchEmptySpot(vehicleType,upgrades);
         if(spot!=null && spot.isFree) {
@@ -95,13 +148,26 @@ abstract class AllocationService implements IAllocationService{
         vehicle.ticket = null;
         allocatedTickets.remove(ticket);
         int charge = 0;
-        charge = costService.getCharge(ticket.inTime, ticket.outTime);
+        //need to get correct costService if it's an upgrade:  Can maintain registry for Cost Service instances for
+        //every different Vehicle type and fetch according to the parkingLot assigned
+        charge = costService.getCharge(ticket);
         return charge;
     }
 }
 class CarAllocationService extends AllocationService{
     CarAllocationService(List<VehicleType> upgrades){
         super(VehicleType.CAR, upgrades);
+    }
+}
+class MotorCycleAllocationService extends AllocationService{
+    MotorCycleAllocationService(List<VehicleType> upgrades){
+        super(VehicleType.MOTORCYCLE, upgrades);
+    }
+}
+
+class CycleAllocationService extends AllocationService{
+    CycleAllocationService(List<VehicleType> upgrades){
+        super(VehicleType.CYCLE, upgrades);
     }
 }
 class ParkingSpotService implements IParkingSpotSearchService{
@@ -118,7 +184,7 @@ class ParkingSpotService implements IParkingSpotSearchService{
     public List<ParkingSpot> searchByDuration(int level, int duration) {
         if(levels.size()>level) {
             List<ParkingSpot> list = levels.get(level).getBookedParkingSpots();
-            return list.stream().filter(parkingSpot -> LocalDateTime.now().minus(parkingSpot.vehicle.ticket.inTime) >duration).collect(Collectors.toList());
+            return list.stream().filter(parkingSpot -> (LocalDateTime.now().getHour() - parkingSpot.vehicle.ticket.inTime.getHour()) >duration).collect(Collectors.toList());
         }
         return null;
     }
@@ -218,11 +284,12 @@ enum DurationSlab{
 }
 class CostService {
     HashMap<DurationSlab,Integer> slab;
-    void setCarCost(DurationSlab durationSlab, int cost){
+    void updateSlabCost(DurationSlab durationSlab, int cost){
         slab.put(durationSlab, cost);
     }
 
-    public int getCharge(LocalDateTime inTime, LocalDateTime outTime) {
+    public int getCharge(Ticket ticket) {
+        LocalDateTime inTime = ticket.inTime, outTime = ticket.outTime;
         int duration = outTime.getHour()- inTime.getHour();
         if(duration<30)
             return slab.get(DurationSlab.LESS_30);
@@ -239,6 +306,10 @@ class CarCostService extends CostService {
     //car make more deatiled implementation for chage calculation for each vehicle type if extended.
 }
 class Ticket{
+    public Vehicle getVehicle() {
+        return vehicle;
+    }
+
     Vehicle vehicle;
     ParkingSpot parkingSpot;
     LocalDateTime inTime;
